@@ -35,7 +35,10 @@
 	export let active: boolean = true;
 	export let scale: number = 1;
 	export let isTouchPoint: boolean = false;
-	export let shape: "rect" | "circle" = "rect";
+	export let showButtonIndicator: boolean = false;
+	export let width: number | undefined = undefined;
+	export let height: number | undefined = undefined;
+	export let directSize: boolean = false;
 	let pressed: boolean = false;
 
 	let state: ActionState | undefined;
@@ -147,10 +150,8 @@
 	let canvas: HTMLCanvasElement;
 	let lock = new CanvasLock();
 	export let size = 144;
-	export let width = 0;
-	export let height = 0;
-	$: resolvedWidth = width || size;
-	$: resolvedHeight = height || size;
+	$: canvasWidth = width ?? size;
+	$: canvasHeight = height ?? size;
 	$: (async () => {
 		const sl = structuredClone(slot);
 		if (!sl) {
@@ -187,22 +188,27 @@
 	}
 
 	$: accessibleLabel = label + (slot ? ": " + slot.action.name + (state?.show && state?.text ? " - " + state.text : "") : "");
+	$: wrapperStyle = directSize
+		? `width: ${canvasWidth}px; height: ${canvasHeight}px;`
+		: `transform: scale(${(112 /* desired inner size */ / size) * scale});`;
+	$: canvasStyle = directSize
+		? "width: 100%; height: 100%;"
+		: `margin: ${-((size + 3 * 2 /* border */ - 132 /* desired outer size */) / 2)}px;`;
 </script>
 
 <div
 	class="relative"
-	style={`width: ${resolvedWidth * scale}px; height: ${resolvedHeight * scale}px;`}
+	style={wrapperStyle}
 >
 	<canvas
 		bind:this={canvas}
-		class="absolute left-0 top-0 box-border border-3 border-neutral-700 outline-none outline-offset-2 outline-blue-500"
-		class:rounded-3xl={shape !== "circle"}
+		class="relative border-3 border-neutral-700 rounded-3xl outline-none outline-offset-2 outline-blue-500"
+		style={canvasStyle}
 		class:outline-solid={active && ((slot && $inspectedInstance == slot.context) || (context && $inspectedInstance == context))}
-		class:rounded-full={shape === "circle"}
+		class:rounded-full!={context?.controller == "Encoder"}
 		class:bg-black={slot != null}
-		style={`width: ${resolvedWidth * scale}px; height: ${resolvedHeight * scale}px;`}
-		width={resolvedWidth}
-		height={resolvedHeight}
+		width={canvasWidth}
+		height={canvasHeight}
 		draggable={slot != null}
 		{tabindex}
 		{role}
@@ -228,7 +234,7 @@
 		on:focus={onfocus}
 		on:contextmenu={contextMenu}
 	/>
-	{#if isTouchPoint && !slot}
+	{#if (isTouchPoint || showButtonIndicator) && !slot}
 		<div class="absolute left-1/4 top-1/2 w-1/2 border-t-4 border-neutral-700 pointer-events-none"></div>
 	{/if}
 </div>
@@ -236,7 +242,7 @@
 {#if $openContextMenu && $openContextMenu?.context == context}
 	<div
 		bind:this={contextMenuEl}
-		class="fixed w-32 font-semibold text-sm text-neutral-300 bg-neutral-700 border border-neutral-600 rounded-lg divide-y divide-neutral-600! z-10"
+		class="absolute w-32 font-semibold text-sm text-neutral-300 bg-neutral-700 border border-neutral-600 rounded-lg divide-y divide-neutral-600! z-10"
 		style={`left: ${$openContextMenu.x}px; top: ${$openContextMenu.y}px;`}
 	>
 		{#if !slot}
