@@ -130,6 +130,8 @@ async fn init(device: AsyncStreamDeck, device_id: String) {
 				encoders: kind.encoder_count(),
 				touchpoints: kind.touchpoint_count(),
 				r#type: device_type,
+				layout_version: None,
+				layout: None,
 			},
 		},
 	)
