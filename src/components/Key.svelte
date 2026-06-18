@@ -35,6 +35,7 @@
 	export let active: boolean = true;
 	export let scale: number = 1;
 	export let isTouchPoint: boolean = false;
+	export let isTouchPanelZone: boolean = false;
 	export let showButtonIndicator: boolean = false;
 	export let width: number | undefined = undefined;
 	export let height: number | undefined = undefined;
@@ -194,6 +195,8 @@
 	$: canvasStyle = directSize
 		? "width: 100%; height: 100%;"
 		: `margin: ${-((size + 3 * 2 /* border */ - 132 /* desired outer size */) / 2)}px;`;
+	$: isSelected = active && ((slot && $inspectedInstance == slot.context) || (context && $inspectedInstance == context));
+	$: showCanvasOutline = isSelected && (!isTouchPanelZone || slot != null);
 </script>
 
 <div
@@ -202,9 +205,11 @@
 >
 	<canvas
 		bind:this={canvas}
-		class="relative border-3 border-neutral-700 rounded-3xl outline-none outline-offset-2 outline-blue-500"
+		class="relative rounded-3xl outline-none outline-offset-2 outline-blue-500"
+		class:border-3={!isTouchPanelZone || slot != null}
+		class:border-neutral-700={!isTouchPanelZone || slot != null}
 		style={canvasStyle}
-		class:outline-solid={active && ((slot && $inspectedInstance == slot.context) || (context && $inspectedInstance == context))}
+		class:outline-solid={showCanvasOutline}
 		class:rounded-full!={context?.controller == "Encoder"}
 		class:bg-black={slot != null}
 		width={canvasWidth}
@@ -234,7 +239,7 @@
 		on:focus={onfocus}
 		on:contextmenu={contextMenu}
 	/>
-	{#if (isTouchPoint || showButtonIndicator) && !slot}
+	{#if (isTouchPoint || showButtonIndicator) && !slot && !isTouchPanelZone}
 		<div class="absolute left-1/4 top-1/2 w-1/2 border-t-4 border-neutral-700 pointer-events-none"></div>
 	{/if}
 </div>

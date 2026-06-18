@@ -250,6 +250,19 @@
 		if (isTouchPointControl(control)) return `Touch point ${control.position + 1}`;
 		return `Key ${control.position + 1}`;
 	}
+
+	function selectedTouchPanelSurfaces(): DeviceLayoutSurface[] {
+		if (!explicitLayout) return [];
+		const selectedSurfaces = new Set<string>();
+		for (const control of explicitControls) {
+			if (!isTouchPointControl(control) || !control.surface) continue;
+			const context = `${device.id}.${profile.id}.Keypad.${control.position}.0`;
+			if ($inspectedInstance == context || JSON.stringify($inspectedInstance) == JSON.stringify({ device: device.id, profile: profile.id, controller: "Keypad", position: control.position })) {
+				selectedSurfaces.add(control.surface);
+			}
+		}
+		return (explicitLayout.surfaces ?? []).filter((surface) => selectedSurfaces.has(surface.id));
+	}
 </script>
 
 <style>
@@ -279,6 +292,11 @@
 		position: absolute;
 		top: 50%;
 		width: 50%;
+	}
+	.device-layout-surface-selected {
+		background-color: rgb(59 130 246 / 0.15);
+		outline: 2px solid rgb(59 130 246);
+		outline-offset: 2px;
 	}
 </style>
 
@@ -315,6 +333,13 @@
 						aria-hidden="true"
 					/>
 				{/each}
+				{#each selectedTouchPanelSurfaces() as surface}
+					<div
+						class="device-layout-surface device-layout-surface-selected"
+						style={surfaceStyle(surface)}
+						aria-hidden="true"
+					/>
+				{/each}
 
 				{#each navigationOrderedControls as control, index}
 					<div class="absolute" style={controlStyle(control)}>
@@ -344,6 +369,7 @@
 								height={controlHeight(control)}
 								directSize
 								isTouchPoint={isTouchPointControl(control)}
+								isTouchPanelZone={isTouchPointControl(control)}
 								showButtonIndicator={showButtonIndicator(control)}
 								label={controlLabel(control)}
 								tabindex={focusedRow === 0 && focusedCol === index ? 0 : -1}
