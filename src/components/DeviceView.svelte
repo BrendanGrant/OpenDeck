@@ -1,14 +1,10 @@
 <script lang="ts">
 	import type { ActionInstance } from "$lib/ActionInstance";
 	import type { Context } from "$lib/Context";
-	import type { DeviceInfo } from "$lib/DeviceInfo";
+	import type { DeviceDescriptor, DeviceLayout, DeviceLayoutControl, DeviceLayoutSurface } from "$lib/DeviceInfo";
+	import { SUPPORTED_DEVICE_LAYOUT_VERSION } from "$lib/DeviceInfo";
 	import type { Profile } from "$lib/Profile";
 	import type { CopiedItem } from "$lib/propertyInspector";
-	import {
-		LEGACY_LAYOUT_CELL_SIZE_PX,
-		normalizeDeviceLayout,
-		type NormalizedControl,
-	} from "$lib/deviceLayout";
 
 	import Key from "./Key.svelte";
 
@@ -16,10 +12,14 @@
 
 	import { invoke } from "@tauri-apps/api/core";
 
-	export let device: DeviceInfo;
+	export let device: DeviceDescriptor;
 	export let profile: Profile;
 
 	export let selectedDevice: string;
+
+	const DEVICE_LAYOUT_VIEWPORT_PADDING_X = 128;
+	const DEVICE_LAYOUT_VIEWPORT_PADDING_Y = 48;
+	const DEVICE_LAYOUT_ROW_TOLERANCE = 24;
 
 	function handleDragStart({ dataTransfer }: DragEvent, controller: string, position: number) {
 		if (!dataTransfer) return;
@@ -78,91 +78,42 @@
 		}
 	}
 
-	$: layout = normalizeDeviceLayout(device);
-	$: controls = layout.controls;
-	$: renderedControls = controls.map((control) => ({
-		...control,
-		slot: control.controller === "Encoder" ? profile.sliders[control.position] : profile.keys[control.position],
-	}));
-	$: overflowsX = layout.canvas.width > (8 * LEGACY_LAYOUT_CELL_SIZE_PX);
-	$: overflowsY = layout.canvas.height > (4 * LEGACY_LAYOUT_CELL_SIZE_PX);
+	$: overflowsX = Math.max(device.columns, device.encoders, device.touchpoints) > 8;
+	$: overflowsY = (device.rows + Math.min(device.encoders, 1) + Math.min(device.touchpoints, 1)) > 4;
+	$: explicitLayout = device.layoutVersion == SUPPORTED_DEVICE_LAYOUT_VERSION && isDeviceLayout(device.layout) ? device.layout : undefined;
+	$: explicitControls = (explicitLayout?.controls ?? []).filter(isSupportedControl);
+	$: explicitNavigationRows = buildNavigationRows(explicitControls);
+	$: navigationOrderedControls = explicitNavigationRows.flat();
+	$: surfaceLookup = new Map((explicitLayout?.surfaces ?? []).map((surface) => [surface.id, surface]));
+	let layoutViewportWidth = 0;
+	let layoutViewportHeight = 0;
+	$: explicitScale = explicitLayout ? calculateLayoutScale(explicitLayout, layoutViewportWidth, layoutViewportHeight) : 1;
 
-	let focusedIndex = 0;
+	// Grid navigation: track focused cell and compute row lengths for arrow key movement.
+	let focusedRow = 0;
+	let focusedCol = 0;
 
-	function rangesOverlap(startA: number, endA: number, startB: number, endB: number) {
-		return startA < endB && startB < endA;
+	$: gridRowLengths = explicitLayout ? explicitNavigationRows.map((row) => row.length) : [
+		...Array(device.rows).fill(device.columns),
+		...(device.encoders > 0 ? [device.encoders] : []),
+		...(device.touchpoints > 0 ? [device.touchpoints] : []),
+	];
+	$: encoderRowIndex = device.rows;
+	$: touchpointRowIndex = device.rows + (device.encoders > 0 ? 1 : 0);
+
+	function flatIndexFromRowCol(row: number, col: number): number {
+		let index = 0;
+		for (let r = 0; r < row; r++) index += gridRowLengths[r];
+		return index + col;
 	}
 
-	function getNextDirectionalIndex(direction: "left" | "right" | "up" | "down") {
-		const current = controls[focusedIndex];
-		if (!current) return focusedIndex;
-
-		const currentLeft = current.x;
-		const currentRight = current.x + current.width;
-		const currentTop = current.y;
-		const currentBottom = current.y + current.height;
-
-		const candidates = controls
-			.map((control, index) => ({ control, index }))
-			.filter(({ index }) => index !== focusedIndex)
-			.map(({ control, index }) => {
-				const left = control.x;
-				const right = control.x + control.width;
-				const top = control.y;
-				const bottom = control.y + control.height;
-				const dx = control.centerX - current.centerX;
-				const dy = control.centerY - current.centerY;
-
-				let primaryDistance = 0;
-				let secondaryDistance = 0;
-				let aligned = false;
-				let inDirection = false;
-
-				switch (direction) {
-					case "left":
-						inDirection = control.centerX < current.centerX;
-						primaryDistance = current.centerX - control.centerX;
-						secondaryDistance = Math.abs(dy);
-						aligned = rangesOverlap(currentTop, currentBottom, top, bottom);
-						break;
-					case "right":
-						inDirection = control.centerX > current.centerX;
-						primaryDistance = control.centerX - current.centerX;
-						secondaryDistance = Math.abs(dy);
-						aligned = rangesOverlap(currentTop, currentBottom, top, bottom);
-						break;
-					case "up":
-						inDirection = control.centerY < current.centerY;
-						primaryDistance = current.centerY - control.centerY;
-						secondaryDistance = Math.abs(dx);
-						aligned = rangesOverlap(currentLeft, currentRight, left, right);
-						break;
-					case "down":
-						inDirection = control.centerY > current.centerY;
-						primaryDistance = control.centerY - current.centerY;
-						secondaryDistance = Math.abs(dx);
-						aligned = rangesOverlap(currentLeft, currentRight, left, right);
-						break;
-				}
-
-				return {
-					index,
-					inDirection,
-					aligned,
-					primaryDistance,
-					secondaryDistance,
-					distanceSquared: (dx * dx) + (dy * dy),
-				};
-			})
-			.filter((candidate) => candidate.inDirection)
-			.sort((left, right) =>
-				Number(right.aligned) - Number(left.aligned) ||
-				left.primaryDistance - right.primaryDistance ||
-				left.secondaryDistance - right.secondaryDistance ||
-				left.distanceSquared - right.distanceSquared
-			);
-
-		return candidates[0]?.index ?? focusedIndex;
+	function rowColFromFlatIndex(flatIndex: number): [number, number] {
+		let remaining = flatIndex;
+		for (let r = 0; r < gridRowLengths.length; r++) {
+			if (remaining < gridRowLengths[r]) return [r, remaining];
+			remaining -= gridRowLengths[r];
+		}
+		return [0, 0];
 	}
 
 	function handleGridKeydown(event: KeyboardEvent) {
@@ -173,42 +124,131 @@
 		event.preventDefault();
 		event.stopPropagation();
 
-		let nextIndex = focusedIndex;
+		let newRow = focusedRow;
+		let newCol = focusedCol;
 
 		switch (event.key) {
-			case "ArrowLeft":
-				nextIndex = getNextDirectionalIndex("left");
-				break;
-			case "ArrowUp":
-				nextIndex = getNextDirectionalIndex("up");
-				break;
 			case "ArrowRight":
-				nextIndex = getNextDirectionalIndex("right");
+				newCol = Math.min(focusedCol + 1, gridRowLengths[focusedRow] - 1);
+				break;
+			case "ArrowLeft":
+				newCol = Math.max(focusedCol - 1, 0);
 				break;
 			case "ArrowDown":
-				nextIndex = getNextDirectionalIndex("down");
+				newRow = Math.min(focusedRow + 1, gridRowLengths.length - 1);
+				newCol = Math.min(focusedCol, gridRowLengths[newRow] - 1);
+				break;
+			case "ArrowUp":
+				newRow = Math.max(focusedRow - 1, 0);
+				newCol = Math.min(focusedCol, gridRowLengths[newRow] - 1);
 				break;
 			case "Home":
-				nextIndex = 0;
+				newCol = 0;
 				break;
 			case "End":
-				nextIndex = Math.max(controls.length - 1, 0);
+				newCol = gridRowLengths[focusedRow] - 1;
 				break;
 		}
 
-		if (nextIndex === focusedIndex) return;
+		if (newRow === focusedRow && newCol === focusedCol) return;
 
-		focusedIndex = nextIndex;
+		focusedRow = newRow;
+		focusedCol = newCol;
+
 		const grid = event.currentTarget as HTMLElement;
 		const cells = grid.querySelectorAll("[role='gridcell']");
-		(cells[nextIndex] as HTMLElement)?.focus();
+		(cells[flatIndexFromRowCol(newRow, newCol)] as HTMLElement)?.focus();
 	}
 
 	function handleGridFocusin(event: FocusEvent) {
 		const grid = event.currentTarget as HTMLElement;
 		const cells = Array.from(grid.querySelectorAll("[role='gridcell']"));
 		const index = cells.indexOf(event.target as Element);
-		if (index !== -1) focusedIndex = index;
+		if (index === -1) return;
+		[focusedRow, focusedCol] = rowColFromFlatIndex(index);
+	}
+
+	function isDeviceLayout(value: unknown): value is DeviceLayout {
+		if (!value || typeof value !== "object") return false;
+		const candidate = value as DeviceLayout;
+		return Number.isFinite(candidate.canvas?.width)
+			&& Number.isFinite(candidate.canvas?.height)
+			&& candidate.canvas.width > 0
+			&& candidate.canvas.height > 0
+			&& Array.isArray(candidate.controls);
+	}
+
+	function isSupportedControl(control: DeviceLayoutControl): boolean {
+		return (control.controller == "Keypad" || control.controller == "Encoder") && controlWidth(control) > 0 && controlHeight(control) > 0;
+	}
+
+	function calculateLayoutScale(layout: DeviceLayout, viewportWidth: number, viewportHeight: number): number {
+		const availableWidth = Math.max(0, viewportWidth - DEVICE_LAYOUT_VIEWPORT_PADDING_X);
+		const availableHeight = Math.max(0, viewportHeight - DEVICE_LAYOUT_VIEWPORT_PADDING_Y);
+		if (availableWidth == 0 || availableHeight == 0) return 1;
+		return Math.min(1, availableWidth / layout.canvas.width, availableHeight / layout.canvas.height);
+	}
+
+	function controlX(control: DeviceLayoutControl): number {
+		return control.shape == "circle" ? control.cx - control.r : control.x;
+	}
+
+	function controlY(control: DeviceLayoutControl): number {
+		return control.shape == "circle" ? control.cy - control.r : control.y;
+	}
+
+	function controlWidth(control: DeviceLayoutControl): number {
+		return control.shape == "circle" ? control.r * 2 : control.width;
+	}
+
+	function controlHeight(control: DeviceLayoutControl): number {
+		return control.shape == "circle" ? control.r * 2 : control.height;
+	}
+
+	function controlCenterX(control: DeviceLayoutControl): number {
+		return controlX(control) + (controlWidth(control) / 2);
+	}
+
+	function controlCenterY(control: DeviceLayoutControl): number {
+		return controlY(control) + (controlHeight(control) / 2);
+	}
+
+	function buildNavigationRows(controls: DeviceLayoutControl[]): DeviceLayoutControl[][] {
+		const sorted = [...controls].sort((a, b) => controlCenterY(a) - controlCenterY(b) || controlCenterX(a) - controlCenterX(b));
+		const rows: DeviceLayoutControl[][] = [];
+		for (const control of sorted) {
+			const row = rows.find((candidate) => Math.abs(controlCenterY(candidate[0]) - controlCenterY(control)) <= DEVICE_LAYOUT_ROW_TOLERANCE);
+			if (row) row.push(control);
+			else rows.push([control]);
+		}
+		for (const row of rows) row.sort((a, b) => controlCenterX(a) - controlCenterX(b));
+		return rows;
+	}
+
+	function controlStyle(control: DeviceLayoutControl): string {
+		return `left: ${controlX(control)}px; top: ${controlY(control)}px; width: ${controlWidth(control)}px; height: ${controlHeight(control)}px;`;
+	}
+
+	function surfaceStyle(surface: DeviceLayoutSurface): string {
+		return `left: ${surface.x}px; top: ${surface.y}px; width: ${surface.width}px; height: ${surface.height}px;`;
+	}
+
+	function controlSurface(control: DeviceLayoutControl): DeviceLayoutSurface | undefined {
+		return control.surface ? surfaceLookup.get(control.surface) : undefined;
+	}
+
+	function isTouchPointControl(control: DeviceLayoutControl): boolean {
+		return control.controller == "Keypad" && controlSurface(control)?.kind == "touchpanel";
+	}
+
+	function showButtonIndicator(control: DeviceLayoutControl): boolean {
+		return control.controller == "Keypad" && control.shape == "circle";
+	}
+
+	function controlLabel(control: DeviceLayoutControl): string {
+		if (control.controller == "Encoder") return `Encoder ${control.position + 1}`;
+		if (isTouchPointControl(control)) return `Touch point ${control.position + 1}`;
+		return `Key ${control.position + 1}`;
 	}
 </script>
 
@@ -225,13 +265,28 @@
 			linear-gradient(to bottom, transparent, black 7.5rem, black calc(100% - 7.5rem), transparent);
 		mask-composite: intersect;
 	}
+	.device-layout-surface {
+		background-color: rgb(38 38 38 / 0.35);
+		border: 3px solid rgb(64 64 64);
+		border-radius: 1.5rem;
+		pointer-events: none;
+		position: absolute;
+	}
+	.device-layout-surface-touchpanel::after {
+		border-top: 4px solid rgb(64 64 64);
+		content: "";
+		left: 25%;
+		position: absolute;
+		top: 50%;
+		width: 50%;
+	}
 </style>
 
 {#key device}
-	<span id="grid-description" class="sr-only">Use arrow keys to move between controls. Moving to a control will display its property inspector.</span>
+	<span id="grid-description" class="sr-only">Use arrow keys to navigate between keys. Moving to a key will display its property inspector.</span>
 	<div
-		class="flex grow justify-center px-16 py-6 overflow-auto"
-		class:items-center={!overflowsX}
+		class="flex flex-col justify-center grow px-16 py-6 overflow-auto"
+		class:items-center={explicitLayout || device.columns <= 8}
 		class:hidden={$inspectedParentAction || selectedDevice != device.id}
 		class:device-fade-x={overflowsX && !overflowsY}
 		class:device-fade-y={overflowsY && !overflowsX}
@@ -244,39 +299,112 @@
 		on:keyup={() => inspectedInstance.set(null)}
 		on:keydown|capture={handleGridKeydown}
 		on:focusin={handleGridFocusin}
+		bind:clientWidth={layoutViewportWidth}
+		bind:clientHeight={layoutViewportHeight}
 	>
-		<div
-			class="relative shrink-0"
-			style={`width: ${layout.canvas.width}px; height: ${layout.canvas.height}px;`}
-		>
-			{#each layout.surfaces.filter((surface) => !["keypad", "display"].includes(surface.kind)) as surface}
-				<div
-					class="absolute box-border rounded-3xl border border-neutral-700/80 pointer-events-none"
-					style={`left: ${surface.x}px; top: ${surface.y}px; width: ${surface.width}px; height: ${surface.height}px;`}
-				></div>
-			{/each}
-
-			{#each renderedControls as control, index}
-				<div
-					class="absolute"
-					style={`left: ${control.x}px; top: ${control.y}px; width: ${control.width}px; height: ${control.height}px;`}
-				>
-					<Key
-						context={{ device: device.id, profile: profile.id, controller: control.controller, position: control.position }}
-						inslot={control.slot}
-						on:dragover={handleDragOver}
-						on:drop={(event) => handleDrop(event, control.controller, control.position)}
-						on:dragstart={(event) => handleDragStart(event, control.controller, control.position)}
-						{handlePaste}
-						width={control.width}
-						height={control.height}
-						shape={control.shape === "circle" ? "circle" : "rect"}
-						isTouchPoint={control.isTouchpoint}
-						label={control.label}
-						tabindex={focusedIndex === index ? 0 : -1}
+		{#if explicitLayout}
+			<div
+				class="relative shrink-0"
+				style={`width: ${explicitLayout.canvas.width}px; height: ${explicitLayout.canvas.height}px; transform: scale(${explicitScale}); transform-origin: center;`}
+				role="rowgroup"
+			>
+				{#each (explicitLayout.surfaces ?? []).filter((surface) => surface.kind == "touchpanel") as surface}
+					<div
+						class="device-layout-surface device-layout-surface-touchpanel"
+						style={surfaceStyle(surface)}
+						aria-hidden="true"
 					/>
+				{/each}
+
+				{#each navigationOrderedControls as control, index}
+					<div class="absolute" style={controlStyle(control)}>
+						{#if control.controller == "Encoder"}
+							<Key
+								context={{ device: device.id, profile: profile.id, controller: "Encoder", position: control.position }}
+								bind:inslot={profile.sliders[control.position]}
+								on:dragover={handleDragOver}
+								on:drop={(event) => handleDrop(event, "Encoder", control.position)}
+								on:dragstart={(event) => handleDragStart(event, "Encoder", control.position)}
+								{handlePaste}
+								width={controlWidth(control)}
+								height={controlHeight(control)}
+								directSize
+								label={controlLabel(control)}
+								tabindex={focusedRow === 0 && focusedCol === index ? 0 : -1}
+							/>
+						{:else}
+							<Key
+								context={{ device: device.id, profile: profile.id, controller: "Keypad", position: control.position }}
+								bind:inslot={profile.keys[control.position]}
+								on:dragover={handleDragOver}
+								on:drop={(event) => handleDrop(event, "Keypad", control.position)}
+								on:dragstart={(event) => handleDragStart(event, "Keypad", control.position)}
+								{handlePaste}
+								width={controlWidth(control)}
+								height={controlHeight(control)}
+								directSize
+								isTouchPoint={isTouchPointControl(control)}
+								showButtonIndicator={showButtonIndicator(control)}
+								label={controlLabel(control)}
+								tabindex={focusedRow === 0 && focusedCol === index ? 0 : -1}
+							/>
+						{/if}
+					</div>
+				{/each}
+			</div>
+		{:else}
+		<div class="flex flex-col" role="rowgroup">
+			{#each { length: device.rows } as _, r}
+				<div class="flex flex-row" role="row">
+					{#each { length: device.columns } as _, c}
+						<Key
+							context={{ device: device.id, profile: profile.id, controller: "Keypad", position: (r * device.columns) + c }}
+							bind:inslot={profile.keys[(r * device.columns) + c]}
+							on:dragover={handleDragOver}
+							on:drop={(event) => handleDrop(event, "Keypad", (r * device.columns) + c)}
+							on:dragstart={(event) => handleDragStart(event, "Keypad", (r * device.columns) + c)}
+							{handlePaste}
+							size={device.id.startsWith("sd-") && device.rows == 4 && device.columns == 8 ? 192 : 144}
+							label="Key {String.fromCharCode(65 + r)}{c + 1}"
+							tabindex={focusedRow === r && focusedCol === c ? 0 : -1}
+						/>
+					{/each}
 				</div>
 			{/each}
 		</div>
+
+		<div class="flex flex-row" role="row">
+			{#each { length: device.encoders } as _, i}
+				<Key
+					context={{ device: device.id, profile: profile.id, controller: "Encoder", position: i }}
+					bind:inslot={profile.sliders[i]}
+					on:dragover={handleDragOver}
+					on:drop={(event) => handleDrop(event, "Encoder", i)}
+					on:dragstart={(event) => handleDragStart(event, "Encoder", i)}
+					{handlePaste}
+					size={device.id.startsWith("sd-") && device.rows == 4 && device.columns == 8 ? 192 : 144}
+					label="Encoder {i + 1}"
+					tabindex={focusedRow === encoderRowIndex && focusedCol === i ? 0 : -1}
+				/>
+			{/each}
+		</div>
+
+		<div class="flex flex-row" role="row">
+			{#each { length: device.touchpoints } as _, i}
+				<Key
+					context={{ device: device.id, profile: profile.id, controller: "Keypad", position: (device.rows * device.columns) + i }}
+					bind:inslot={profile.keys[(device.rows * device.columns) + i]}
+					on:dragover={handleDragOver}
+					on:drop={(event) => handleDrop(event, "Keypad", (device.rows * device.columns) + i)}
+					on:dragstart={(event) => handleDragStart(event, "Keypad", (device.rows * device.columns) + i)}
+					{handlePaste}
+					size={device.id.startsWith("sd-") && device.rows == 4 && device.columns == 8 ? 192 : 144}
+					isTouchPoint
+					label="Touch point {i + 1}"
+					tabindex={focusedRow === touchpointRowIndex && focusedCol === i ? 0 : -1}
+				/>
+			{/each}
+		</div>
+		{/if}
 	</div>
 {/key}
