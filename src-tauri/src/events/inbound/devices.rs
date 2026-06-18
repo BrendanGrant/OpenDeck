@@ -7,6 +7,18 @@ use crate::store::profiles::get_device_profiles;
 use serde::Deserialize;
 
 pub async fn register_device(uuid: &str, mut event: PayloadEvent<crate::shared::DeviceInfo>) -> Result<(), anyhow::Error> {
+	log::debug!(
+		"registerDevice requested uuid={} id={} name={} rows={} cols={} encoders={} touchpoints={} layout={}",
+		uuid,
+		event.payload.id,
+		event.payload.name,
+		event.payload.rows,
+		event.payload.columns,
+		event.payload.encoders,
+		event.payload.touchpoints,
+		event.payload.layout.is_some()
+	);
+
 	if uuid.is_empty() || Some(uuid) == DEVICE_NAMESPACES.read().await.get(&event.payload.id[..2]).map(|x| x.as_str()) {
 		if let Ok(profiles) = get_device_profiles(&event.payload.id) {
 			let mut profile_stores = crate::store::profiles::PROFILE_STORES.write().await;
@@ -23,6 +35,7 @@ pub async fn register_device(uuid: &str, mut event: PayloadEvent<crate::shared::
 		DEVICES.insert(event.payload.id.clone(), event.payload.clone());
 		let _ = crate::device_sleep::note_activity(&event.payload.id).await;
 		crate::events::frontend::update_devices().await;
+		log::debug!("registerDevice applied id={} total_devices={}", event.payload.id, DEVICES.len());
 
 		let mut locks = crate::store::profiles::acquire_locks_mut().await;
 		let selected_profile = locks.device_stores.get_selected_profile(&event.payload.id)?;
@@ -39,6 +52,12 @@ pub async fn register_device(uuid: &str, mut event: PayloadEvent<crate::shared::
 
 		Ok(())
 	} else {
+		log::warn!(
+			"registerDevice rejected uuid={} id={} namespace_owner={:?}",
+			uuid,
+			event.payload.id,
+			DEVICE_NAMESPACES.read().await.get(&event.payload.id[..2]).map(|x| x.to_owned())
+		);
 		Err(anyhow::anyhow!("plugin {uuid} is not registered for device namespace {}", &event.payload.id[..2]))
 	}
 }

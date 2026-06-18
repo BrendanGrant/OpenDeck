@@ -1,6 +1,7 @@
 <script lang="ts">
 	import type { DeviceInfo } from "$lib/DeviceInfo";
 	import type { Profile } from "$lib/Profile";
+	import { getDeviceCanvasSize } from "$lib/deviceLayout";
 
 	import { profileManager } from "$lib/singletons";
 
@@ -49,10 +50,9 @@
 
 	$: {
 		if (devices[value]) {
-			const effectiveCols = Math.min(Math.max(devices[value].columns, devices[value].encoders, devices[value].touchpoints), 8);
-			const effectiveRows = Math.min(devices[value].rows + Math.min(devices[value].encoders, 1) + Math.min(devices[value].touchpoints, 1), 4);
-			const idealWidth = (effectiveCols * 132) + 416;
-			const idealHeight = (effectiveRows * 132) + 384 + (buildInfo?.split("</summary>")[0]?.includes("darwin") ? 28 : 0);
+			const canvas = getDeviceCanvasSize(devices[value]);
+			const idealWidth = canvas.width + 416;
+			const idealHeight = canvas.height + 384 + (buildInfo?.split("</summary>")[0]?.includes("darwin") ? 28 : 0);
 			(async () => {
 				const width = Math.min(idealWidth, screen.availWidth);
 				const height = Math.min(idealHeight, screen.availHeight);

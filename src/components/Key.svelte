@@ -35,6 +35,7 @@
 	export let active: boolean = true;
 	export let scale: number = 1;
 	export let isTouchPoint: boolean = false;
+	export let shape: "rect" | "circle" = "rect";
 	let pressed: boolean = false;
 
 	let state: ActionState | undefined;
@@ -146,6 +147,10 @@
 	let canvas: HTMLCanvasElement;
 	let lock = new CanvasLock();
 	export let size = 144;
+	export let width = 0;
+	export let height = 0;
+	$: resolvedWidth = width || size;
+	$: resolvedHeight = height || size;
 	$: (async () => {
 		const sl = structuredClone(slot);
 		if (!sl) {
@@ -186,17 +191,18 @@
 
 <div
 	class="relative"
-	style={`transform: scale(${(112 /* desired inner size */ / size) * scale});`}
+	style={`width: ${resolvedWidth * scale}px; height: ${resolvedHeight * scale}px;`}
 >
 	<canvas
 		bind:this={canvas}
-		class="relative border-3 border-neutral-700 rounded-3xl outline-none outline-offset-2 outline-blue-500"
-		style={`margin: ${-((size + 3 * 2 /* border */ - 132 /* desired outer size */) / 2)}px;`}
+		class="absolute left-0 top-0 box-border border-3 border-neutral-700 outline-none outline-offset-2 outline-blue-500"
+		class:rounded-3xl={shape !== "circle"}
 		class:outline-solid={active && ((slot && $inspectedInstance == slot.context) || (context && $inspectedInstance == context))}
-		class:rounded-full!={context?.controller == "Encoder"}
+		class:rounded-full={shape === "circle"}
 		class:bg-black={slot != null}
-		width={size}
-		height={size}
+		style={`width: ${resolvedWidth * scale}px; height: ${resolvedHeight * scale}px;`}
+		width={resolvedWidth}
+		height={resolvedHeight}
 		draggable={slot != null}
 		{tabindex}
 		{role}
@@ -230,7 +236,7 @@
 {#if $openContextMenu && $openContextMenu?.context == context}
 	<div
 		bind:this={contextMenuEl}
-		class="absolute w-32 font-semibold text-sm text-neutral-300 bg-neutral-700 border border-neutral-600 rounded-lg divide-y divide-neutral-600! z-10"
+		class="fixed w-32 font-semibold text-sm text-neutral-300 bg-neutral-700 border border-neutral-600 rounded-lg divide-y divide-neutral-600! z-10"
 		style={`left: ${$openContextMenu.x}px; top: ${$openContextMenu.y}px;`}
 	>
 		{#if !slot}

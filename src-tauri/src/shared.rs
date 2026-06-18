@@ -39,6 +39,61 @@ pub struct DeviceInfo {
 	#[serde_inline_default(0)]
 	pub touchpoints: u8,
 	pub r#type: u8,
+	#[serde_inline_default(None)]
+	pub layout_version: Option<u8>,
+	#[serde_inline_default(None)]
+	pub layout: Option<DeviceLayout>,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceLayout {
+	pub canvas: DeviceLayoutCanvas,
+	#[serde(default)]
+	pub surfaces: Vec<DeviceLayoutSurface>,
+	#[serde(default)]
+	pub controls: Vec<DeviceLayoutControl>,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceLayoutCanvas {
+	pub width: u16,
+	pub height: u16,
+	pub unit: String,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceLayoutSurface {
+	pub id: String,
+	pub kind: String,
+	pub x: i16,
+	pub y: i16,
+	pub width: u16,
+	pub height: u16,
+	pub pixel_width: Option<u16>,
+	pub pixel_height: Option<u16>,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceLayoutControl {
+	pub controller: String,
+	pub position: u8,
+	pub kind: Option<String>,
+	pub shape: String,
+	pub x: Option<i16>,
+	pub y: Option<i16>,
+	pub width: Option<u16>,
+	pub height: Option<u16>,
+	#[serde(alias = "cx")]
+	pub center_x: Option<i16>,
+	#[serde(alias = "cy")]
+	pub center_y: Option<i16>,
+	#[serde(alias = "r")]
+	pub radius: Option<u16>,
+	pub surface: Option<String>,
 }
 
 pub static DEVICES: LazyLock<DashMap<String, DeviceInfo>> = LazyLock::new(DashMap::new);

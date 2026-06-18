@@ -4,6 +4,11 @@
 	import type { DeviceInfo } from "$lib/DeviceInfo";
 	import type { Profile } from "$lib/Profile";
 	import type { CopiedItem } from "$lib/propertyInspector";
+	import {
+		LEGACY_LAYOUT_CELL_SIZE_PX,
+		normalizeDeviceLayout,
+		type NormalizedControl,
+	} from "$lib/deviceLayout";
 
 	import Key from "./Key.svelte";
 
@@ -73,34 +78,91 @@
 		}
 	}
 
-	$: overflowsX = Math.max(device.columns, device.encoders, device.touchpoints) > 8;
-	$: overflowsY = (device.rows + Math.min(device.encoders, 1) + Math.min(device.touchpoints, 1)) > 4;
+	$: layout = normalizeDeviceLayout(device);
+	$: controls = layout.controls;
+	$: renderedControls = controls.map((control) => ({
+		...control,
+		slot: control.controller === "Encoder" ? profile.sliders[control.position] : profile.keys[control.position],
+	}));
+	$: overflowsX = layout.canvas.width > (8 * LEGACY_LAYOUT_CELL_SIZE_PX);
+	$: overflowsY = layout.canvas.height > (4 * LEGACY_LAYOUT_CELL_SIZE_PX);
 
-	// Grid navigation: track focused cell and compute row lengths for arrow key movement.
-	let focusedRow = 0;
-	let focusedCol = 0;
+	let focusedIndex = 0;
 
-	$: gridRowLengths = [
-		...Array(device.rows).fill(device.columns),
-		...(device.encoders > 0 ? [device.encoders] : []),
-		...(device.touchpoints > 0 ? [device.touchpoints] : []),
-	];
-	$: encoderRowIndex = device.rows;
-	$: touchpointRowIndex = device.rows + (device.encoders > 0 ? 1 : 0);
-
-	function flatIndexFromRowCol(row: number, col: number): number {
-		let index = 0;
-		for (let r = 0; r < row; r++) index += gridRowLengths[r];
-		return index + col;
+	function rangesOverlap(startA: number, endA: number, startB: number, endB: number) {
+		return startA < endB && startB < endA;
 	}
 
-	function rowColFromFlatIndex(flatIndex: number): [number, number] {
-		let remaining = flatIndex;
-		for (let r = 0; r < gridRowLengths.length; r++) {
-			if (remaining < gridRowLengths[r]) return [r, remaining];
-			remaining -= gridRowLengths[r];
-		}
-		return [0, 0];
+	function getNextDirectionalIndex(direction: "left" | "right" | "up" | "down") {
+		const current = controls[focusedIndex];
+		if (!current) return focusedIndex;
+
+		const currentLeft = current.x;
+		const currentRight = current.x + current.width;
+		const currentTop = current.y;
+		const currentBottom = current.y + current.height;
+
+		const candidates = controls
+			.map((control, index) => ({ control, index }))
+			.filter(({ index }) => index !== focusedIndex)
+			.map(({ control, index }) => {
+				const left = control.x;
+				const right = control.x + control.width;
+				const top = control.y;
+				const bottom = control.y + control.height;
+				const dx = control.centerX - current.centerX;
+				const dy = control.centerY - current.centerY;
+
+				let primaryDistance = 0;
+				let secondaryDistance = 0;
+				let aligned = false;
+				let inDirection = false;
+
+				switch (direction) {
+					case "left":
+						inDirection = control.centerX < current.centerX;
+						primaryDistance = current.centerX - control.centerX;
+						secondaryDistance = Math.abs(dy);
+						aligned = rangesOverlap(currentTop, currentBottom, top, bottom);
+						break;
+					case "right":
+						inDirection = control.centerX > current.centerX;
+						primaryDistance = control.centerX - current.centerX;
+						secondaryDistance = Math.abs(dy);
+						aligned = rangesOverlap(currentTop, currentBottom, top, bottom);
+						break;
+					case "up":
+						inDirection = control.centerY < current.centerY;
+						primaryDistance = current.centerY - control.centerY;
+						secondaryDistance = Math.abs(dx);
+						aligned = rangesOverlap(currentLeft, currentRight, left, right);
+						break;
+					case "down":
+						inDirection = control.centerY > current.centerY;
+						primaryDistance = control.centerY - current.centerY;
+						secondaryDistance = Math.abs(dx);
+						aligned = rangesOverlap(currentLeft, currentRight, left, right);
+						break;
+				}
+
+				return {
+					index,
+					inDirection,
+					aligned,
+					primaryDistance,
+					secondaryDistance,
+					distanceSquared: (dx * dx) + (dy * dy),
+				};
+			})
+			.filter((candidate) => candidate.inDirection)
+			.sort((left, right) =>
+				Number(right.aligned) - Number(left.aligned) ||
+				left.primaryDistance - right.primaryDistance ||
+				left.secondaryDistance - right.secondaryDistance ||
+				left.distanceSquared - right.distanceSquared
+			);
+
+		return candidates[0]?.index ?? focusedIndex;
 	}
 
 	function handleGridKeydown(event: KeyboardEvent) {
@@ -111,48 +173,42 @@
 		event.preventDefault();
 		event.stopPropagation();
 
-		let newRow = focusedRow;
-		let newCol = focusedCol;
+		let nextIndex = focusedIndex;
 
 		switch (event.key) {
-			case "ArrowRight":
-				newCol = Math.min(focusedCol + 1, gridRowLengths[focusedRow] - 1);
-				break;
 			case "ArrowLeft":
-				newCol = Math.max(focusedCol - 1, 0);
-				break;
-			case "ArrowDown":
-				newRow = Math.min(focusedRow + 1, gridRowLengths.length - 1);
-				newCol = Math.min(focusedCol, gridRowLengths[newRow] - 1);
+				nextIndex = getNextDirectionalIndex("left");
 				break;
 			case "ArrowUp":
-				newRow = Math.max(focusedRow - 1, 0);
-				newCol = Math.min(focusedCol, gridRowLengths[newRow] - 1);
+				nextIndex = getNextDirectionalIndex("up");
+				break;
+			case "ArrowRight":
+				nextIndex = getNextDirectionalIndex("right");
+				break;
+			case "ArrowDown":
+				nextIndex = getNextDirectionalIndex("down");
 				break;
 			case "Home":
-				newCol = 0;
+				nextIndex = 0;
 				break;
 			case "End":
-				newCol = gridRowLengths[focusedRow] - 1;
+				nextIndex = Math.max(controls.length - 1, 0);
 				break;
 		}
 
-		if (newRow === focusedRow && newCol === focusedCol) return;
+		if (nextIndex === focusedIndex) return;
 
-		focusedRow = newRow;
-		focusedCol = newCol;
-
+		focusedIndex = nextIndex;
 		const grid = event.currentTarget as HTMLElement;
 		const cells = grid.querySelectorAll("[role='gridcell']");
-		(cells[flatIndexFromRowCol(newRow, newCol)] as HTMLElement)?.focus();
+		(cells[nextIndex] as HTMLElement)?.focus();
 	}
 
 	function handleGridFocusin(event: FocusEvent) {
 		const grid = event.currentTarget as HTMLElement;
 		const cells = Array.from(grid.querySelectorAll("[role='gridcell']"));
 		const index = cells.indexOf(event.target as Element);
-		if (index === -1) return;
-		[focusedRow, focusedCol] = rowColFromFlatIndex(index);
+		if (index !== -1) focusedIndex = index;
 	}
 </script>
 
@@ -172,10 +228,10 @@
 </style>
 
 {#key device}
-	<span id="grid-description" class="sr-only">Use arrow keys to navigate between keys. Moving to a key will display its property inspector.</span>
+	<span id="grid-description" class="sr-only">Use arrow keys to move between controls. Moving to a control will display its property inspector.</span>
 	<div
-		class="flex flex-col justify-center grow px-16 py-6 overflow-auto"
-		class:items-center={device.columns <= 8}
+		class="flex grow justify-center px-16 py-6 overflow-auto"
+		class:items-center={!overflowsX}
 		class:hidden={$inspectedParentAction || selectedDevice != device.id}
 		class:device-fade-x={overflowsX && !overflowsY}
 		class:device-fade-y={overflowsY && !overflowsX}
@@ -189,56 +245,37 @@
 		on:keydown|capture={handleGridKeydown}
 		on:focusin={handleGridFocusin}
 	>
-		<div class="flex flex-col" role="rowgroup">
-			{#each { length: device.rows } as _, r}
-				<div class="flex flex-row" role="row">
-					{#each { length: device.columns } as _, c}
-						<Key
-							context={{ device: device.id, profile: profile.id, controller: "Keypad", position: (r * device.columns) + c }}
-							bind:inslot={profile.keys[(r * device.columns) + c]}
-							on:dragover={handleDragOver}
-							on:drop={(event) => handleDrop(event, "Keypad", (r * device.columns) + c)}
-							on:dragstart={(event) => handleDragStart(event, "Keypad", (r * device.columns) + c)}
-							{handlePaste}
-							size={device.id.startsWith("sd-") && device.rows == 4 && device.columns == 8 ? 192 : 144}
-							label="Key {String.fromCharCode(65 + r)}{c + 1}"
-							tabindex={focusedRow === r && focusedCol === c ? 0 : -1}
-						/>
-					{/each}
+		<div
+			class="relative shrink-0"
+			style={`width: ${layout.canvas.width}px; height: ${layout.canvas.height}px;`}
+		>
+			{#each layout.surfaces.filter((surface) => !["keypad", "display"].includes(surface.kind)) as surface}
+				<div
+					class="absolute box-border rounded-3xl border border-neutral-700/80 pointer-events-none"
+					style={`left: ${surface.x}px; top: ${surface.y}px; width: ${surface.width}px; height: ${surface.height}px;`}
+				></div>
+			{/each}
+
+			{#each renderedControls as control, index}
+				<div
+					class="absolute"
+					style={`left: ${control.x}px; top: ${control.y}px; width: ${control.width}px; height: ${control.height}px;`}
+				>
+					<Key
+						context={{ device: device.id, profile: profile.id, controller: control.controller, position: control.position }}
+						inslot={control.slot}
+						on:dragover={handleDragOver}
+						on:drop={(event) => handleDrop(event, control.controller, control.position)}
+						on:dragstart={(event) => handleDragStart(event, control.controller, control.position)}
+						{handlePaste}
+						width={control.width}
+						height={control.height}
+						shape={control.shape === "circle" ? "circle" : "rect"}
+						isTouchPoint={control.isTouchpoint}
+						label={control.label}
+						tabindex={focusedIndex === index ? 0 : -1}
+					/>
 				</div>
-			{/each}
-		</div>
-
-		<div class="flex flex-row" role="row">
-			{#each { length: device.encoders } as _, i}
-				<Key
-					context={{ device: device.id, profile: profile.id, controller: "Encoder", position: i }}
-					bind:inslot={profile.sliders[i]}
-					on:dragover={handleDragOver}
-					on:drop={(event) => handleDrop(event, "Encoder", i)}
-					on:dragstart={(event) => handleDragStart(event, "Encoder", i)}
-					{handlePaste}
-					size={device.id.startsWith("sd-") && device.rows == 4 && device.columns == 8 ? 192 : 144}
-					label="Encoder {i + 1}"
-					tabindex={focusedRow === encoderRowIndex && focusedCol === i ? 0 : -1}
-				/>
-			{/each}
-		</div>
-
-		<div class="flex flex-row" role="row">
-			{#each { length: device.touchpoints } as _, i}
-				<Key
-					context={{ device: device.id, profile: profile.id, controller: "Keypad", position: (device.rows * device.columns) + i }}
-					bind:inslot={profile.keys[(device.rows * device.columns) + i]}
-					on:dragover={handleDragOver}
-					on:drop={(event) => handleDrop(event, "Keypad", (device.rows * device.columns) + i)}
-					on:dragstart={(event) => handleDragStart(event, "Keypad", (device.rows * device.columns) + i)}
-					{handlePaste}
-					size={device.id.startsWith("sd-") && device.rows == 4 && device.columns == 8 ? 192 : 144}
-					isTouchPoint
-					label="Touch point {i + 1}"
-					tabindex={focusedRow === touchpointRowIndex && focusedCol === i ? 0 : -1}
-				/>
 			{/each}
 		</div>
 	</div>
