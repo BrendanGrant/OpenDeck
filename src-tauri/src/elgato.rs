@@ -2,7 +2,6 @@ use crate::encoder_layouts::generate_encoder_image;
 use crate::events::inbound;
 
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::sync::LazyLock;
 
 use base64::Engine as _;
@@ -14,8 +13,11 @@ use elgato_streamdeck::{
 use image::GenericImageView as _;
 use tokio::sync::RwLock;
 
+// AsyncStreamDeck clones share the underlying device handle. Clone handles out
+// of this map before awaiting USB I/O: hot-unplug needs the write lock to remove
+// a device, and a stalled write must not retain the map's read lock indefinitely.
 static ELGATO_DEVICES: LazyLock<RwLock<HashMap<String, AsyncStreamDeck>>> = LazyLock::new(|| RwLock::new(HashMap::new()));
-static HIDAPI: LazyLock<RwLock<Option<Arc<hidapi::HidApi>>>> = LazyLock::new(|| RwLock::new(None));
+static HIDAPI: LazyLock<RwLock<Option<hidapi::HidApi>>> = LazyLock::new(|| RwLock::new(None));
 
 /// Extract the average colour from an image.
 fn extract_average_colour(img: &image::DynamicImage) -> (u8, u8, u8) {
@@ -27,7 +29,8 @@ fn extract_average_colour(img: &image::DynamicImage) -> (u8, u8, u8) {
 }
 
 pub async fn update_image(context: &crate::shared::Context, image: Option<&str>) -> Result<(), anyhow::Error> {
-	if let Some(device) = ELGATO_DEVICES.read().await.get(&context.device) {
+	let device = ELGATO_DEVICES.read().await.get(&context.device).cloned();
+	if let Some(device) = device {
 		let kind = device.kind();
 		if !kind.is_visual() {
 			return Ok(());
@@ -99,7 +102,8 @@ async fn clear_all_touchpoints(device: &AsyncStreamDeck) {
 }
 
 pub async fn clear_screen(id: &str) -> Result<(), anyhow::Error> {
-	if let Some(device) = ELGATO_DEVICES.read().await.get(id) {
+	let device = ELGATO_DEVICES.read().await.get(id).cloned();
+	if let Some(device) = device {
 		device.clear_all_button_images().await?;
 		if let Some(lcd_format) = device.kind().lcd_image_format() {
 			device
@@ -109,21 +113,23 @@ pub async fn clear_screen(id: &str) -> Result<(), anyhow::Error> {
 				)?)
 				.await?;
 		}
-		clear_all_touchpoints(device).await;
+		clear_all_touchpoints(&device).await;
 		device.flush().await?;
 	}
 	Ok(())
 }
 
 pub async fn set_brightness(id: &str, brightness: u8) {
-	if let Some(device) = ELGATO_DEVICES.read().await.get(id) {
+	let device = ELGATO_DEVICES.read().await.get(id).cloned();
+	if let Some(device) = device {
 		let _ = device.set_brightness(brightness.clamp(0, 100)).await;
 		let _ = device.flush().await;
 	}
 }
 
 pub async fn reset_devices() {
-	for (_id, device) in ELGATO_DEVICES.read().await.iter() {
+	let devices = ELGATO_DEVICES.read().await.values().cloned().collect::<Vec<_>>();
+	for device in devices {
 		let _ = device.reset().await;
 		let _ = device.flush().await;
 	}
@@ -246,28 +252,32 @@ pub async fn initialise_devices() {
 		crate::plugins::DEVICE_NAMESPACES.write().await.remove("sd");
 	}
 
-	// Iterate through detected Elgato devices and attempt to register them.
-	let current = HIDAPI.read().await.as_ref().cloned();
-	let hid = match current {
-		Some(arc) => arc,
-		None => match elgato_streamdeck::new_hidapi() {
-			Ok(hid) => {
-				let arc = Arc::new(hid);
-				HIDAPI.write().await.replace(arc.clone());
-				arc
-			}
+	// HidApi snapshots the device list. Refresh it on every scan so a Stream Deck
+	// connected after startup, or reconnected after removal, becomes discoverable.
+	let mut hidapi = HIDAPI.write().await;
+	if hidapi.is_none() {
+		match elgato_streamdeck::new_hidapi() {
+			Ok(hid) => *hidapi = Some(hid),
 			Err(error) => {
 				log::warn!("Failed to initialise hidapi: {error}");
 				return;
 			}
-		},
-	};
-	for (kind, serial) in elgato_streamdeck::asynchronous::list_devices_async(&hid) {
+		}
+	}
+
+	let hid = hidapi.as_mut().unwrap();
+	if let Err(error) = elgato_streamdeck::asynchronous::refresh_device_list_async(hid) {
+		log::warn!("Failed to refresh the Elgato device list: {error}");
+		return;
+	}
+
+	// Iterate through detected Elgato devices and attempt to register them.
+	for (kind, serial) in elgato_streamdeck::asynchronous::list_devices_async(hid) {
 		let device_id = format!("sd-{serial}");
 		if ELGATO_DEVICES.read().await.contains_key(&device_id) {
 			continue;
 		}
-		match elgato_streamdeck::AsyncStreamDeck::connect(&hid, kind, &serial) {
+		match elgato_streamdeck::AsyncStreamDeck::connect(hid, kind, &serial) {
 			Ok(device) => {
 				tokio::spawn(init(device, device_id));
 			}
