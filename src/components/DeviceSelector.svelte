@@ -3,6 +3,7 @@
 	import type { Profile } from "$lib/Profile";
 	import { getDeviceCanvasSize } from "$lib/deviceLayout";
 
+	import { t } from "$lib/i18n";
 	import { profileManager } from "$lib/singletons";
 
 	import { invoke } from "@tauri-apps/api/core";
@@ -41,11 +42,11 @@
 		}
 	});
 
-	(async () => devices = await invoke("get_devices"))();
-	listen("devices", ({ payload }: { payload: { [id: string]: DeviceDescriptor } }) => devices = payload);
+	(async () => (devices = await invoke("get_devices")))();
+	listen("devices", ({ payload }: { payload: { [id: string]: DeviceDescriptor } }) => (devices = payload));
 
 	let buildInfo: string;
-	(async () => buildInfo = await invoke("get_build_info"))();
+	(async () => (buildInfo = await invoke("get_build_info")))();
 	const window = getCurrentWindow();
 
 	$: {
@@ -73,8 +74,8 @@
 {#if Object.keys(devices).length > 0}
 	<div class="select-device-wrapper">
 		<span bind:this={measure} class="invisible fixed whitespace-pre pointer-events-none text-xl font-semibold" aria-hidden="true"></span>
-		<select bind:value style:width="{selectWidth}px" aria-label="Device">
-			<option value="" disabled selected>Choose a device...</option>
+		<select bind:value style:width="{selectWidth}px" aria-label={$t("device_selector.device")}>
+			<option value="" disabled selected>{$t("device_selector.choose_device")}</option>
 
 			{#each Object.entries(devices).sort() as [id, device]}
 				<option value={id}>{device.name}</option>

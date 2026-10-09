@@ -1,17 +1,19 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 	<head>
 		<script>
 			let update = () => {};
 
 			function connectElgatoStreamDeckSocket(inPort, inPropertyInspectorUUID, inRegisterEvent, inInfo, inActionInfo) {
-				const websocket = new WebSocket("ws://localhost:" + inPort);
+				const websocket = new WebSocket("ws://127.0.0.1:" + inPort);
 				inActionInfo = JSON.parse(inActionInfo);
 				websocket.onopen = () => {
-					websocket.send(JSON.stringify({
-						event: inRegisterEvent,
-						uuid: inPropertyInspectorUUID,
-					}));
+					websocket.send(
+						JSON.stringify({
+							event: inRegisterEvent,
+							uuid: inPropertyInspectorUUID,
+						}),
+					);
 				};
 
 				const device = document.getElementById("device");
@@ -29,16 +31,18 @@
 				}
 
 				update = () => {
-					websocket.send(JSON.stringify({
-						event: "setSettings",
-						context: inActionInfo.context,
-						payload: {
-							device: device.value ?? inActionInfo.device,
-							profile: profile.value,
-							anticlockwise: anticlockwise.value,
-							clockwise: clockwise.value,
-						},
-					}));
+					websocket.send(
+						JSON.stringify({
+							event: "setSettings",
+							context: inActionInfo.context,
+							payload: {
+								device: device.value ?? inActionInfo.device,
+								profile: profile.value,
+								anticlockwise: anticlockwise.value,
+								clockwise: clockwise.value,
+							},
+						}),
+					);
 				};
 
 				websocket.onmessage = (event) => {

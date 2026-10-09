@@ -8,6 +8,7 @@
 
 	import Key from "./Key.svelte";
 
+	import { t } from "$lib/i18n";
 	import { inspectedInstance, inspectedParentAction } from "$lib/propertyInspector";
 
 	import { invoke } from "@tauri-apps/api/core";
@@ -37,7 +38,7 @@
 
 	async function handleDrop({ dataTransfer }: DragEvent, controller: string, position: number) {
 		let context = { device: device.id, profile: profile.id, controller, position };
-		let array = controller == "Encoder" ? profile.sliders : profile.keys;
+		let array = controller == "Encoder" ? profile.sliders : controller == "Infobar" ? profile.infobars : profile.keys;
 		if (dataTransfer?.getData("action")) {
 			let action = JSON.parse(dataTransfer?.getData("action"));
 			if (array[position]) {
@@ -46,10 +47,11 @@
 			array[position] = await invoke("create_instance", { context, action });
 			profile = profile;
 		} else if (dataTransfer?.getData("controller")) {
-			let oldArray = dataTransfer?.getData("controller") == "Encoder" ? profile.sliders : profile.keys;
+			let oldController = dataTransfer?.getData("controller");
+			let oldArray = oldController == "Encoder" ? profile.sliders : oldController == "Infobar" ? profile.infobars : profile.keys;
 			let oldPosition = parseInt(dataTransfer?.getData("position"));
 			let response: ActionInstance = await invoke("move_instance", {
-				source: { device: device.id, profile: profile.id, controller: dataTransfer?.getData("controller"), position: oldPosition },
+				source: { device: device.id, profile: profile.id, controller: oldController, position: oldPosition },
 				destination: context,
 				retain: false,
 			});
@@ -62,7 +64,7 @@
 	}
 
 	async function handlePaste(item: CopiedItem, destination: Context) {
-		let array = destination.controller == "Encoder" ? profile.sliders : profile.keys;
+		let array = destination.controller == "Encoder" ? profile.sliders : destination.controller == "Infobar" ? profile.infobars : profile.keys;
 
 		if (item.type == "action") {
 			if (array[destination.position]) return;
@@ -79,7 +81,7 @@
 	}
 
 	$: overflowsX = Math.max(device.columns, device.encoders, device.touchpoints) > 8;
-	$: overflowsY = (device.rows + Math.min(device.encoders, 1) + Math.min(device.touchpoints, 1)) > 4;
+	$: overflowsY = device.rows + Math.min(device.encoders, 1) + Math.min(device.touchpoints, 1) > 4;
 	$: explicitLayout = device.layoutVersion == SUPPORTED_DEVICE_LAYOUT_VERSION && isDeviceLayout(device.layout) ? device.layout : undefined;
 	$: explicitControls = (explicitLayout?.controls ?? []).filter(isSupportedControl);
 	$: explicitNavigationRows = buildNavigationRows(explicitControls);
@@ -96,10 +98,11 @@
 	$: gridRowLengths = explicitLayout ? explicitNavigationRows.map((row) => row.length) : [
 		...Array(device.rows).fill(device.columns),
 		...(device.encoders > 0 ? [device.encoders] : []),
-		...(device.touchpoints > 0 ? [device.touchpoints] : []),
+		...(device.touchpoints > 0 || device.infobars > 0 ? [device.touchpoints + device.infobars] : []),
 	];
 	$: encoderRowIndex = device.rows;
 	$: touchpointRowIndex = device.rows + (device.encoders > 0 ? 1 : 0);
+	$: keypadRowWidth = device.columns * 132;
 
 	function flatIndexFromRowCol(row: number, col: number): number {
 		let index = 0;
@@ -265,46 +268,11 @@
 	}
 </script>
 
-<style>
-	.device-fade-x {
-		mask-image: linear-gradient(to right, transparent, black 7.5rem, black calc(100% - 7.5rem), transparent);
-	}
-	.device-fade-y {
-		mask-image: linear-gradient(to bottom, transparent, black 7.5rem, black calc(100% - 7.5rem), transparent);
-	}
-	.device-fade-xy {
-		mask-image:
-			linear-gradient(to right, transparent, black 7.5rem, black calc(100% - 7.5rem), transparent),
-			linear-gradient(to bottom, transparent, black 7.5rem, black calc(100% - 7.5rem), transparent);
-		mask-composite: intersect;
-	}
-	.device-layout-surface {
-		background-color: rgb(38 38 38 / 0.35);
-		border: 3px solid rgb(64 64 64);
-		border-radius: 1.5rem;
-		pointer-events: none;
-		position: absolute;
-	}
-	.device-layout-surface-touchpanel::after {
-		border-top: 4px solid rgb(64 64 64);
-		content: "";
-		left: 25%;
-		position: absolute;
-		top: 50%;
-		width: 50%;
-	}
-	.device-layout-surface-selected {
-		background-color: rgb(59 130 246 / 0.15);
-		outline: 2px solid rgb(59 130 246);
-		outline-offset: 2px;
-	}
-</style>
-
 {#key device}
-	<span id="grid-description" class="sr-only">Use arrow keys to navigate between keys. Moving to a key will display its property inspector.</span>
+	<span id="grid-description" class="sr-only">{$t("device_view.grid_description")}</span>
 	<div
 		class="flex flex-col justify-center grow px-16 py-6 overflow-auto"
-		class:items-center={explicitLayout || device.columns <= 8}
+		class:items-center={explicitLayout || device.columns <= 9}
 		class:hidden={$inspectedParentAction || selectedDevice != device.id}
 		class:device-fade-x={overflowsX && !overflowsY}
 		class:device-fade-y={overflowsY && !overflowsX}
@@ -384,14 +352,14 @@
 				<div class="flex flex-row" role="row">
 					{#each { length: device.columns } as _, c}
 						<Key
-							context={{ device: device.id, profile: profile.id, controller: "Keypad", position: (r * device.columns) + c }}
-							bind:inslot={profile.keys[(r * device.columns) + c]}
+							context={{ device: device.id, profile: profile.id, controller: "Keypad", position: r * device.columns + c }}
+							bind:inslot={profile.keys[r * device.columns + c]}
 							on:dragover={handleDragOver}
-							on:drop={(event) => handleDrop(event, "Keypad", (r * device.columns) + c)}
-							on:dragstart={(event) => handleDragStart(event, "Keypad", (r * device.columns) + c)}
+							on:drop={(event) => handleDrop(event, "Keypad", r * device.columns + c)}
+							on:dragstart={(event) => handleDragStart(event, "Keypad", r * device.columns + c)}
 							{handlePaste}
 							size={device.id.startsWith("sd-") && device.rows == 4 && device.columns == 8 ? 192 : 144}
-							label="Key {String.fromCharCode(65 + r)}{c + 1}"
+							label="{$t('device_view.key')} {String.fromCharCode(65 + r)}{c + 1}"
 							tabindex={focusedRow === r && focusedCol === c ? 0 : -1}
 						/>
 					{/each}
@@ -399,7 +367,7 @@
 			{/each}
 		</div>
 
-		<div class="flex flex-row" role="row">
+		<div class="flex flex-row justify-between" role="row" style={`width: ${keypadRowWidth}px;`}>
 			{#each { length: device.encoders } as _, i}
 				<Key
 					context={{ device: device.id, profile: profile.id, controller: "Encoder", position: i }}
@@ -409,24 +377,42 @@
 					on:dragstart={(event) => handleDragStart(event, "Encoder", i)}
 					{handlePaste}
 					size={device.id.startsWith("sd-") && device.rows == 4 && device.columns == 8 ? 192 : 144}
-					label="Encoder {i + 1}"
+					label="{$t('device_view.encoder')} {i + 1}"
 					tabindex={focusedRow === encoderRowIndex && focusedCol === i ? 0 : -1}
 				/>
 			{/each}
 		</div>
 
-		<div class="flex flex-row" role="row">
+		<div class="flex flex-row items-center" role="row">
 			{#each { length: device.touchpoints } as _, i}
+				<!-- On the Stream Deck Neo, the infobar display sits physically between the two touchpoints. -->
+				{#if device.infobars > 0 && i === 1}
+					{#each { length: device.infobars } as _, j}
+						<div class="px-3.5 py-[3.5px]">
+							<Key
+								context={{ device: device.id, profile: profile.id, controller: "Infobar", position: j }}
+								bind:inslot={profile.infobars[j]}
+								on:dragover={handleDragOver}
+								on:drop={(event) => handleDrop(event, "Infobar", j)}
+								on:dragstart={(event) => handleDragStart(event, "Infobar", j)}
+								{handlePaste}
+								size={device.id.startsWith("sd-") && device.rows == 4 && device.columns == 8 ? 192 : 144}
+								width={248}
+								height={58}
+							/>
+						</div>
+					{/each}
+				{/if}
 				<Key
-					context={{ device: device.id, profile: profile.id, controller: "Keypad", position: (device.rows * device.columns) + i }}
-					bind:inslot={profile.keys[(device.rows * device.columns) + i]}
+					context={{ device: device.id, profile: profile.id, controller: "Keypad", position: device.rows * device.columns + i }}
+					bind:inslot={profile.keys[device.rows * device.columns + i]}
 					on:dragover={handleDragOver}
-					on:drop={(event) => handleDrop(event, "Keypad", (device.rows * device.columns) + i)}
-					on:dragstart={(event) => handleDragStart(event, "Keypad", (device.rows * device.columns) + i)}
+					on:drop={(event) => handleDrop(event, "Keypad", device.rows * device.columns + i)}
+					on:dragstart={(event) => handleDragStart(event, "Keypad", device.rows * device.columns + i)}
 					{handlePaste}
 					size={device.id.startsWith("sd-") && device.rows == 4 && device.columns == 8 ? 192 : 144}
 					isTouchPoint
-					label="Touch point {i + 1}"
+					label="{$t('device_view.touchpoint')} {i + 1}"
 					tabindex={focusedRow === touchpointRowIndex && focusedCol === i ? 0 : -1}
 				/>
 			{/each}
@@ -434,3 +420,38 @@
 		{/if}
 	</div>
 {/key}
+
+<style>
+	.device-fade-x {
+		mask-image: linear-gradient(to right, transparent, black 7.5rem, black calc(100% - 7.5rem), transparent);
+	}
+	.device-fade-y {
+		mask-image: linear-gradient(to bottom, transparent, black 7.5rem, black calc(100% - 7.5rem), transparent);
+	}
+	.device-fade-xy {
+		mask-image:
+			linear-gradient(to right, transparent, black 7.5rem, black calc(100% - 7.5rem), transparent),
+			linear-gradient(to bottom, transparent, black 7.5rem, black calc(100% - 7.5rem), transparent);
+		mask-composite: intersect;
+	}
+	.device-layout-surface {
+		background-color: rgb(38 38 38 / 0.35);
+		border: 3px solid rgb(64 64 64);
+		border-radius: 1.5rem;
+		pointer-events: none;
+		position: absolute;
+	}
+	.device-layout-surface-touchpanel::after {
+		border-top: 4px solid rgb(64 64 64);
+		content: "";
+		left: 25%;
+		position: absolute;
+		top: 50%;
+		width: 50%;
+	}
+	.device-layout-surface-selected {
+		background-color: rgb(59 130 246 / 0.15);
+		outline: 2px solid rgb(59 130 246);
+		outline-offset: 2px;
+	}
+</style>

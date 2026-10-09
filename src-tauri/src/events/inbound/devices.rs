@@ -22,13 +22,21 @@ pub async fn register_device(uuid: &str, mut event: PayloadEvent<crate::shared::
 		let _ = crate::events::outbound::devices::device_did_connect(&event.payload.device.id, (&event.payload.device).into()).await;
 		let device_descriptor: crate::shared::DeviceDescriptor = event.payload.clone().into();
 		DEVICES.insert(event.payload.device.id.clone(), device_descriptor);
-		let _ = crate::device_sleep::note_activity(&event.payload.device.id).await;
+		let _ = crate::events::outbound::devices::set_device_brightness(&event.payload.device.id, crate::store::get_settings().value.brightness).await;
+		let _ = crate::device_sleep::apply_initial_device_sleep(&event.payload.device.id).await;
 		crate::events::frontend::update_devices().await;
 
 		let mut locks = crate::store::profiles::acquire_locks_mut().await;
 		let selected_profile = locks.device_stores.get_selected_profile(&event.payload.device.id)?;
 		let profile = locks.profile_stores.get_profile_store(&DEVICES.get(&event.payload.device.id).unwrap(), &selected_profile)?;
-		for instance in profile.value.keys.iter().flatten().chain(profile.value.sliders.iter().flatten()) {
+		for instance in profile
+			.value
+			.keys
+			.iter()
+			.flatten()
+			.chain(profile.value.sliders.iter().flatten())
+			.chain(profile.value.infobars.iter().flatten())
+		{
 			let _ = crate::events::outbound::will_appear::will_appear(instance).await;
 		}
 
@@ -54,8 +62,20 @@ pub async fn deregister_device(uuid: &str, event: PayloadEvent<String>) -> Resul
 
 		let selected_profile = locks.device_stores.get_selected_profile(&event.payload)?;
 		let profile = locks.profile_stores.get_profile_store(&DEVICES.get(&event.payload).unwrap(), &selected_profile)?;
-		for instance in profile.value.keys.iter().flatten().chain(profile.value.sliders.iter().flatten()) {
+		for instance in profile
+			.value
+			.keys
+			.iter()
+			.flatten()
+			.chain(profile.value.sliders.iter().flatten())
+			.chain(profile.value.infobars.iter().flatten())
+		{
 			let _ = crate::events::outbound::will_appear::will_disappear(instance, false).await;
+		}
+
+		// Flush any pending profile writes before removing the device.
+		if let Err(error) = crate::store::profiles::save_profile_now(&event.payload, &mut locks).await {
+			log::error!("Failed to flush profile for device {}: {error}", event.payload);
 		}
 
 		if let Ok(profiles) = get_device_profiles(&event.payload) {
@@ -123,6 +143,23 @@ pub async fn encoder_up(event: PayloadEvent<PressPayload>) -> Result<(), anyhow:
 		return Ok(());
 	}
 	crate::events::outbound::encoder::dial_press(&event.payload.device, "dialUp", event.payload.position).await
+}
+
+#[derive(Deserialize)]
+pub struct TouchscreenPressPayload {
+	pub device: String,
+	pub position: u8,
+	pub x: u16,
+	pub y: u16,
+	#[serde(default)]
+	pub hold: bool,
+}
+
+pub async fn touchscreen_press(event: PayloadEvent<TouchscreenPressPayload>) -> Result<(), anyhow::Error> {
+	if crate::device_sleep::note_activity(&event.payload.device).await.unwrap_or(false) {
+		return Ok(());
+	}
+	crate::events::outbound::encoder::touch_tap(&event.payload.device, event.payload.position, event.payload.x, event.payload.y, event.payload.hold).await
 }
 
 pub async fn rerender_images(_event: PayloadEvent<String>) -> Result<(), anyhow::Error> {

@@ -8,15 +8,18 @@
 		"dev": "vite dev",
 		"build": "vite build",
 		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
-		"tauri": "tauri"
+		"tauri": "tauri",
+		"format": "prettier --write ."
 	},
 	"devDependencies": {
 		"@sveltejs/adapter-static": "^3.0",
 		"@sveltejs/kit": "^2.50",
 		"@sveltejs/vite-plugin-svelte": "^3.1",
 		"@tailwindcss/vite": "^4.1",
-		"@tauri-apps/cli": "^2.10",
+		"@tauri-apps/cli": "^2.12",
 		"lightningcss": "^1.31",
+		"prettier": "^3.8",
+		"prettier-plugin-svelte": "^3.5",
 		"svelte": "^4.2",
 		"svelte-check": "^4.3",
 		"tailwindcss": "^4.1",
@@ -25,7 +28,7 @@
 	},
 	"type": "module",
 	"dependencies": {
-		"@tauri-apps/api": "^2.10",
+		"@tauri-apps/api": "^2.12",
 		"@tauri-apps/plugin-deep-link": "^2.4",
 		"@tauri-apps/plugin-dialog": "^2.6",
 		"dompurify": "^3.3",
@@ -33,5 +36,12 @@
 		"marked-alert": "^2.1",
 		"marked-base-url": "^1.1",
 		"phosphor-svelte": "^2.0"
+	},
+	"prettier": {
+		"useTabs": true,
+		"printWidth": 160,
+		"plugins": [
+			"prettier-plugin-svelte"
+		]
 	}
 }

@@ -1,3 +1,5 @@
+use crate::device_sleep::is_device_sleeping;
+use crate::encoder_layouts::generate_encoder_image;
 use crate::events::inbound;
 
 use std::collections::HashMap;
@@ -8,7 +10,7 @@ use base64::Engine as _;
 use elgato_streamdeck::{
 	AsyncStreamDeck, DeviceStateUpdate,
 	images::{ImageRect, convert_image_with_format_async},
-	info::Kind,
+	info::{ImageRotation, Kind},
 };
 use image::GenericImageView as _;
 use tokio::sync::RwLock;
@@ -38,13 +40,24 @@ pub async fn update_image(context: &crate::shared::Context, image: Option<&str>)
 			let data = image.split_once(',').unwrap().1;
 			let bytes = base64::engine::general_purpose::STANDARD.decode(data)?;
 			if context.controller == "Encoder" {
-				device
-					.write_lcd(
-						(context.position as u16 * 200) + 64,
-						14,
-						&ImageRect::from_image_async(image::load_from_memory(&bytes)?.resize(72, 72, image::imageops::FilterType::Nearest))?,
-					)
-					.await?;
+				let mut img = generate_encoder_image(context, &bytes).await?;
+				let Some(format) = device.kind().lcd_image_format() else {
+					return Err(anyhow::anyhow!("Failed to get LCD image format"));
+				};
+				img = match format.rotation {
+					ImageRotation::Rot0 => img,
+					ImageRotation::Rot90 => img.rotate90(),
+					ImageRotation::Rot180 => img.rotate180(),
+					ImageRotation::Rot270 => img.rotate270(),
+				};
+				device.write_lcd(context.position as u16 * 200, 0, &ImageRect::from_image_async(img)?).await?;
+			} else if context.controller == "Infobar" {
+				let img = image::load_from_memory(&bytes)?;
+				let Some(format) = device.kind().lcd_image_format() else {
+					return Err(anyhow::anyhow!("Failed to get LCD image format"));
+				};
+				let data = convert_image_with_format_async(format, img.resize_exact(248, 58, image::imageops::FilterType::Lanczos3))?;
+				device.write_lcd_fill(&data).await?;
 			} else if is_touch_point {
 				let (r, g, b) = extract_average_colour(&image::load_from_memory(&bytes)?);
 				device.set_touchpoint_color(context.position - key_count, r, g, b).await?;
@@ -52,9 +65,23 @@ pub async fn update_image(context: &crate::shared::Context, image: Option<&str>)
 				device.set_button_image(context.position, image::load_from_memory(&bytes)?).await?;
 			}
 		} else if context.controller == "Encoder" {
-			device
-				.write_lcd(context.position as u16 * 200, 0, &ImageRect::from_image_async(image::DynamicImage::new_rgb8(200, 100))?)
-				.await?;
+			let mut img = image::DynamicImage::new_rgb8(200, 100);
+			let Some(format) = device.kind().lcd_image_format() else {
+				return Err(anyhow::anyhow!("Failed to get LCD image format"));
+			};
+			img = match format.rotation {
+				ImageRotation::Rot0 => img,
+				ImageRotation::Rot90 => img.rotate90(),
+				ImageRotation::Rot180 => img.rotate180(),
+				ImageRotation::Rot270 => img.rotate270(),
+			};
+			device.write_lcd(context.position as u16 * 200, 0, &ImageRect::from_image_async(img)?).await?;
+		} else if context.controller == "Infobar" {
+			let Some(format) = device.kind().lcd_image_format() else {
+				return Err(anyhow::anyhow!("Failed to get LCD image format"));
+			};
+			let data = convert_image_with_format_async(format, image::DynamicImage::new_rgb8(248, 58))?;
+			device.write_lcd_fill(&data).await?;
 		} else if is_touch_point {
 			device.set_touchpoint_color(context.position - key_count, 0, 0, 0).await?;
 		} else {
@@ -75,9 +102,12 @@ async fn clear_all_touchpoints(device: &AsyncStreamDeck) {
 pub async fn clear_screen(id: &str) -> Result<(), anyhow::Error> {
 	if let Some(device) = ELGATO_DEVICES.read().await.get(id) {
 		device.clear_all_button_images().await?;
-		if device.kind() == Kind::Plus {
+		if let Some(lcd_format) = device.kind().lcd_image_format() {
 			device
-				.write_lcd_fill(&convert_image_with_format_async(device.kind().lcd_image_format().unwrap(), image::DynamicImage::new_rgb8(800, 100))?)
+				.write_lcd_fill(&convert_image_with_format_async(
+					lcd_format,
+					image::DynamicImage::new_rgb8(lcd_format.size.0 as u32, lcd_format.size.1 as u32),
+				)?)
 				.await?;
 		}
 		clear_all_touchpoints(device).await;
@@ -94,9 +124,18 @@ pub async fn set_brightness(id: &str, brightness: u8) {
 }
 
 pub async fn reset_devices() {
-	for (_id, device) in ELGATO_DEVICES.read().await.iter() {
+	for device in ELGATO_DEVICES.read().await.values() {
 		let _ = device.reset().await;
 		let _ = device.flush().await;
+	}
+}
+
+/// Wake up certain kinds of devices that do not wake themselves after the computer resumes from sleep.
+pub async fn wake_deeply_sleeping_devices() {
+	for (id, device) in ELGATO_DEVICES.read().await.iter() {
+		if device.kind() == Kind::Plus && !is_device_sleeping(id) {
+			set_brightness(id, crate::store::get_settings().value.brightness).await;
+		}
 	}
 }
 
@@ -105,6 +144,7 @@ async fn init(device: AsyncStreamDeck, device_id: String) {
 		return;
 	}
 
+	let device_name = device.product().await.unwrap();
 	let kind = device.kind();
 	let device_type = match kind {
 		Kind::Original | Kind::OriginalV2 | Kind::Mk2 | Kind::Mk2Scissor | Kind::Mk2Module => 0,
@@ -113,11 +153,13 @@ async fn init(device: AsyncStreamDeck, device_id: String) {
 		Kind::Pedal => 5,
 		Kind::Plus => 7,
 		Kind::Neo => 9,
+		Kind::PlusXl => 13,
 	};
-	let _ = device.clear_all_button_images().await;
-	clear_all_touchpoints(&device).await;
-	let _ = device.set_brightness(crate::store::get_settings().value.brightness).await;
-	let _ = device.flush().await;
+
+	let reader = device.get_reader();
+	ELGATO_DEVICES.write().await.insert(device_id.clone(), device);
+	let _ = clear_screen(&device_id).await;
+
 	crate::events::inbound::devices::register_device(
 		"",
 		crate::events::inbound::PayloadEvent {
@@ -125,11 +167,12 @@ async fn init(device: AsyncStreamDeck, device_id: String) {
 				device: crate::shared::DeviceInfo {
 					id: device_id.clone(),
 					plugin: String::new(),
-					name: device.product().await.unwrap(),
+					name: device_name,
 					rows: kind.row_count(),
 					columns: kind.column_count(),
 					encoders: kind.encoder_count(),
 					touchpoints: kind.touchpoint_count(),
+					infobars: if kind == Kind::Neo { 1 } else { 0 },
 					r#type: device_type,
 				},
 				layout_version: None,
@@ -140,8 +183,6 @@ async fn init(device: AsyncStreamDeck, device_id: String) {
 	.await
 	.unwrap();
 
-	let reader = device.get_reader();
-	ELGATO_DEVICES.write().await.insert(device_id.clone(), device);
 	let press = |position| inbound::PayloadEvent {
 		payload: inbound::devices::PressPayload { device: device_id.clone(), position },
 	};
@@ -150,6 +191,15 @@ async fn init(device: AsyncStreamDeck, device_id: String) {
 			device: device_id.clone(),
 			position,
 			ticks: ticks.into(),
+		},
+	};
+	let touchscreen_press = |position, x, y, hold| inbound::PayloadEvent {
+		payload: inbound::devices::TouchscreenPressPayload {
+			device: device_id.clone(),
+			position,
+			x,
+			y,
+			hold,
 		},
 	};
 	loop {
@@ -166,6 +216,20 @@ async fn init(device: AsyncStreamDeck, device_id: String) {
 				DeviceStateUpdate::EncoderTwist(dial, ticks) => inbound::devices::encoder_change(encoder(dial, ticks)).await,
 				DeviceStateUpdate::EncoderDown(dial) => inbound::devices::encoder_down(press(dial)).await,
 				DeviceStateUpdate::EncoderUp(dial) => inbound::devices::encoder_up(press(dial)).await,
+				DeviceStateUpdate::TouchScreenPress(x, y) => {
+					let (position, x, y) = match kind {
+						Kind::Plus | Kind::PlusXl => ((x / 200) as u8, x % 200, y),
+						_ => continue,
+					};
+					inbound::devices::touchscreen_press(touchscreen_press(position, x, y, false)).await
+				}
+				DeviceStateUpdate::TouchScreenLongPress(x, y) => {
+					let (position, x, y) = match kind {
+						Kind::Plus | Kind::PlusXl => ((x / 200) as u8, x % 200, y),
+						_ => continue,
+					};
+					inbound::devices::touchscreen_press(touchscreen_press(position, x, y, true)).await
+				}
 				_ => Ok(()),
 			} {
 				Ok(_) => (),
