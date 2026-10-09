@@ -11,8 +11,9 @@ export function getDeviceCanvasSize(device: DeviceDescriptor) {
 		};
 	}
 
-	const columns = Math.max(device.columns, device.encoders, device.touchpoints, 1);
-	const rows = device.rows + Math.min(device.encoders, 1) + Math.min(device.touchpoints, 1);
+	// Large legacy devices scroll inside the window rather than growing it without limit.
+	const columns = Math.min(Math.max(device.columns, device.encoders, device.touchpoints, 1), 8);
+	const rows = Math.min(device.rows + Math.min(device.encoders, 1) + Math.min(device.touchpoints, 1), 4);
 	return {
 		width: columns * LEGACY_LAYOUT_CELL_SIZE_PX,
 		height: Math.max(rows, 1) * LEGACY_LAYOUT_CELL_SIZE_PX,
